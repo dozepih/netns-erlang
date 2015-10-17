@@ -1,2 +1,4 @@
-ebin/
 rebar
+ebin/
+c_src/*.o
+priv/
