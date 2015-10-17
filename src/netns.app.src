@@ -1,0 +1,12 @@
+{application, netns,
+ [
+  {description, "netns"},
+  {vsn, "1.0"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { sysSock, []}},
+  {env, []}
+ ]}.
