@@ -1,15 +1,21 @@
+
+#define _GNU_SOURCE /* for setns */
+#include <fcntl.h>
+#include <sched.h>
 #include <unistd.h>
+
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
-#include <fcntl.h>
-#include <linux/sched.h>
 #include <errno.h>
 #include <assert.h>
 #include "erl_nif.h"
 
 #define INVALID_SOCKET -1
+
+static ERL_NIF_TERM am_ok;
+static ERL_NIF_TERM am_error;
 
 typedef struct _namespace_t {
     struct _namespace_t  *next;
@@ -30,7 +36,6 @@ typedef struct {
     ErlNifThreadOpts*   opts;
     ErlNifTid           qthread;
     queue_t             *queue;
-    ERL_NIF_TERM        atom_ok;
 } state_t;
 
 
@@ -159,32 +164,6 @@ addns(queue_t *queue, ErlNifPid *pid, int slots, int ns)
     return 1;
 }
 
-static int
-load(ErlNifEnv* env, void** priv, ERL_NIF_TERM load_info)
-{
-    state_t *state = (state_t*)enif_alloc(sizeof(state_t));
-    if (state == (state_t*)-1) return -1;
-
-    state->queue = queue_create();
-    if (state->queue == NULL) goto error;
-
-    state->opts = enif_thread_opts_create("thread_opts");
-    if(enif_thread_create("", &(state->qthread), thr_main,
-                          (void*)state, state->opts) != 0)
-    {
-        return -1;
-    }
-
-    state->atom_ok = enif_make_atom(env, "ok");
-    *priv = (void*) state;
-    return 0;
-
-error:
-    if(state->queue != NULL) queue_destroy(state->queue);
-    enif_free(state->queue);
-    return -1;
-}
-
 // ----------------------------------------------------------------------------
 // The actual C implementation of an Erlang function.
 //
@@ -210,14 +189,14 @@ sock(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
     }
 
     addns(state->queue, pid, slots, ns);
-    return state->atom_ok;
+    return am_ok;
 }
 
 static ERL_NIF_TERM
 makesocks(ErlNifEnv *env, namespace_t *ns)
 {
     int slots = ns->slots;
-    int fd, i = 0;
+    int fd, i;
     int current_ns, new_ns;
     char netns[30];
     ERL_NIF_TERM list, res, tail;
@@ -246,21 +225,19 @@ makesocks(ErlNifEnv *env, namespace_t *ns)
     }
 
     list = enif_make_list(env, 0);
-    for (i; i < slots; i++) {
+    for (i = 0; i < slots; i++) {
         fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd != -1) {
             tail = enif_make_int(env, fd);
             list = enif_make_list_cell(env, tail, list);
         }
-        else
-            ;
     }
 
     if (ns->ns != 0) {
         if (setns(current_ns, CLONE_NEWNET) != 0) {
             /* major error */
             close(current_ns);
-            return;
+            return am_error;
         } else {
             close(current_ns);
         }
@@ -300,9 +277,8 @@ static ERL_NIF_TERM
 closesock(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
     int fd;
-    int errsv;
 
-    if (! enif_get_int(env, argv[0], &fd)) {
+    if (!enif_get_int(env, argv[0], &fd)) {
         return enif_make_badarg(env);
     }
 
@@ -310,18 +286,38 @@ closesock(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
       return enif_make_atom(env, "eio");
    }
 
-   return enif_make_atom(env, "ok");
+   return am_ok;
 }
 
-static ErlNifFunc nif_funcs[] = {
-    {"sock", 3, sock},
-    {"closesock", 1, closesock}
-};
-
 static int
-upgrade(ErlNifEnv* env, void** priv, void** old_priv, ERL_NIF_TERM load_info)
+load(ErlNifEnv* env, void** priv, ERL_NIF_TERM load_info)
 {
-    return;
+    state_t *state;
+
+    /* useful atoms */
+    am_ok    = enif_make_atom(env,"ok");
+    am_error = enif_make_atom(env,"error");
+
+    if ((state = (state_t*)enif_alloc(sizeof(state_t))) == NULL)
+        return -1;
+
+    if ((state->queue = queue_create()) == NULL)
+        goto error;
+
+    state->opts = enif_thread_opts_create("thread_opts");
+    if(enif_thread_create("", &(state->qthread),
+                          thr_main, (void*)state,
+                          state->opts) != 0) {
+        goto error;
+    }
+    *priv = (void*) state;
+    return 0;
+
+error:
+    if (state->queue)
+        queue_destroy(state->queue);
+    enif_free(state->queue);
+    return -1;
 }
 
 static void
@@ -333,6 +329,11 @@ unload(ErlNifEnv* env, void* priv)
     return;
 }
 
+static ErlNifFunc nif_funcs[] = {
+    {"sock", 3, sock},
+    {"closesock", 1, closesock}
+};
+
 // Initialize this NIF library.
-ERL_NIF_INIT(sysSock, nif_funcs, &load, NULL, &upgrade, &unload);
+ERL_NIF_INIT(sysSock, nif_funcs, &load, NULL, NULL, &unload);
 
