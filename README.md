@@ -4,7 +4,7 @@ This is a NIF which reimplements the gen_*:socket() systemcall as it was
 basically too slow when running with the namespece-support OTP added some
 release ago.
 
-Basically, we preallocate a number och sockets in each and every namespace and
+Basically, we preallocate a number of sockets in each and every namespace and
 will hand these ones out once someone needs them. This will speed things up
 considerably.
 
